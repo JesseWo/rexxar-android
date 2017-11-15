@@ -4,7 +4,9 @@ import android.net.Uri;
 import android.text.TextUtils;
 
 import com.douban.rexxar.Constants;
+import com.douban.rexxar.route.RouteManager;
 import com.douban.rexxar.utils.LogUtils;
+import com.douban.rexxar.utils.MD5Utils;
 import com.douban.rexxar.utils.Utils;
 
 import java.io.File;
@@ -109,11 +111,12 @@ public class CacheHelper {
         if (TextUtils.isEmpty(url)) {
             return null;
         }
+        // html地址需要去掉参数
         url = Uri.parse(url).buildUpon().clearQuery().build().toString();
         if (!checkUrl(url)) {
             return null;
         }
-        CacheEntry result;
+        CacheEntry result = null;
         // 遍历外部缓存
         for (ICache cache : mCaches) {
             result = cache.findCache(url);
@@ -123,10 +126,22 @@ public class CacheHelper {
         }
         // 遍历内部缓存
         result = mInternalHtmlCache.findCache(url);
-        if (null != result) {
-            return result;
-        }
         return result;
+    }
+
+    /**
+     * 是否缓存了
+     *
+     * @param url html地址
+     * @return
+     */
+    public boolean hasHtmlCached(String url) {
+        CacheEntry cacheEntry = findHtmlCache(url);
+        if (null != cacheEntry) {
+            cacheEntry.close();
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -158,7 +173,31 @@ public class CacheHelper {
         if (!checkUrl(url)) {
             return true;
         }
+        if (!checkHtmlFile(url, bytes)) {
+            LogUtils.i(TAG, "html file check fail : url: " + url + ", bytes md5: " + MD5Utils.getMd5(bytes));
+            return false;
+        }
         return mInternalHtmlCache.saveCache(url, bytes);
+    }
+
+    // 建议html文件的命名规则是：%filename%-%hash code%.html
+    private boolean checkHtmlFile(String url, byte[] bytes) {
+        String fileName = Uri.parse(url).getLastPathSegment();
+        // 不是以html为结尾的，则不进行校验
+        if (!fileName.endsWith(Constants.EXTENSION_HTML)) {
+            return true;
+        }
+        try {
+            String hashCode = fileName.split("\\.")[0].split("-")[1];
+            // 提取到hash code
+            if (!TextUtils.isEmpty(hashCode)) {
+                return MD5Utils.getMd5(bytes).startsWith(hashCode);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return true;
+        }
+        return true;
     }
 
     /**
@@ -259,9 +298,7 @@ public class CacheHelper {
             if (!url.contains(File.separator)) {
                 return url;
             }
-            Uri uri = Uri.parse(url);
-            String path = uri.getPath();
-            String key = Utils.hash(path);
+            String key = Utils.hash(url);
             LogUtils.i(TAG, "url : " + url + " ; key : " + key);
             return key;
         } catch (Exception e) {

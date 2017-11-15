@@ -115,9 +115,6 @@ public class RexxarWebViewClient extends WebViewClient {
         } else {
             resourceResponse = super.shouldInterceptRequest(view, request);
         }
-        if (resourceResponse == null) {
-            monitorRequestUrl(request.getUrl().toString(), null);
-        }
         return resourceResponse;
     }
 
@@ -156,7 +153,7 @@ public class RexxarWebViewClient extends WebViewClient {
      */
     protected WebResourceResponse handleResourceRequest(WebView webView, String requestUrl) {
         if (!shouldIntercept(requestUrl)) {
-            return super.shouldInterceptRequest(webView, monitorRequestUrl(requestUrl, new Throwable("should not intercept")));
+            return super.shouldInterceptRequest(webView, requestUrl);
         }
         LogUtils.i(TAG, "[handleResourceRequest] url =  " + requestUrl);
 
@@ -208,7 +205,7 @@ public class RexxarWebViewClient extends WebViewClient {
         }
 
         // js直接返回
-        if (Helper.isJsResource(requestUrl)) {
+        if (CacheHelper.getInstance().cacheEnabled() && Helper.isJsResource(requestUrl)) {
             final CacheEntry cacheEntry = CacheHelper.getInstance().findCache(requestUrl);
             if (null == cacheEntry) {
                 // 后面逻辑会通过network去加载
@@ -225,8 +222,10 @@ public class RexxarWebViewClient extends WebViewClient {
                     if (TextUtils.isEmpty(data) || (cacheEntry.length > 0 && cacheEntry.length != data.getBytes().length)) {
                         RxLoadError error = RxLoadError.JS_CACHE_INVALID.clone();
                         if (TextUtils.isEmpty(data)) {
+                            // 发生0次
                             error.extra = "js is empty";
                         } else {
+                            // 发生0次
                             error.extra = "cache length : " + cacheEntry.length + "; data length : " + data.getBytes().length;
                         }
                         showError(error);
@@ -268,20 +267,8 @@ public class RexxarWebViewClient extends WebViewClient {
         } catch (Throwable e) {
             e.printStackTrace();
             LogUtils.e(TAG, "url : " + requestUrl + " " + e.getMessage());
-            return super.shouldInterceptRequest(webView, monitorRequestUrl(requestUrl, e));
+            return super.shouldInterceptRequest(webView, requestUrl);
         }
-    }
-
-    /**
-     * 拦截请求失败时便于追踪
-     *
-     * @param originRequestUrl 原始请求地址
-     * @param throwable 拦截出错原因
-     *
-     * @return 包装之后的请求地址
-     */
-    protected String monitorRequestUrl(String originRequestUrl, Throwable throwable) {
-        return originRequestUrl;
     }
 
     /**
@@ -471,8 +458,9 @@ public class RexxarWebViewClient extends WebViewClient {
                 } else {
                     LogUtils.i(TAG, "load async failed :" + mUrl);
                     if (Helper.isJsResource(mUrl)) {
+                        // 如果是404的话，html加载成功了，js出错了, 是否意味着需要刷新一次route.
                         RxLoadError error = RxLoadError.JS_CACHE_INVALID.clone();
-                        error.extra = "request is fail, response code: " + response.code();
+                        error.extra = "request is fail, response code: " + response.code() + " : " + mUrl;
                         showError(error);
                         return;
                     }
@@ -513,7 +501,7 @@ public class RexxarWebViewClient extends WebViewClient {
                 LogUtils.i(TAG, "load async exception :" + mUrl + " ; " + e.getMessage());
                 if (Helper.isJsResource(mUrl)) {
                     RxLoadError error = RxLoadError.JS_CACHE_INVALID.clone();
-                    error.extra = e.getMessage();
+                    error.extra = e.getMessage() + " : " + mUrl;
                     showError(error);
                     return;
                 }

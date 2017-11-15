@@ -55,8 +55,12 @@ public class RouteManager {
 
     private static RouteManager sInstance;
     private static RouteConfig sRouteConfig;
-    private RouteManager() {
-        loadLocalRoutes();
+
+    /**
+     * @param asyncLoadRoute 异步加载route, 默认为true
+     */
+    private RouteManager(boolean asyncLoadRoute) {
+        loadLocalRoutes(asyncLoadRoute);
         BusProvider.getInstance().register(this);
     }
 
@@ -64,6 +68,9 @@ public class RouteManager {
      * 缓存Route列表
      */
     private Routes mRoutes;
+
+    // test
+    private String mRouteSource = "null";
 
     /**
      * 待校验的route数据
@@ -90,10 +97,14 @@ public class RouteManager {
     }
 
     public static RouteManager getInstance() {
+        return getInstance(true);
+    }
+
+    public static RouteManager getInstance(boolean asyncLoadRoute) {
         if (null == sInstance) {
             synchronized (RouteManager.class) {
                 if (null == sInstance) {
-                    sInstance = new RouteManager();
+                    sInstance = new RouteManager(asyncLoadRoute);
                 }
             }
         }
@@ -102,6 +113,10 @@ public class RouteManager {
 
     public Routes getRoutes() {
         return mRoutes;
+    }
+
+    public String getRouteSource() {
+        return mRouteSource;
     }
 
     /**
@@ -117,9 +132,11 @@ public class RouteManager {
      * 加载本地的route
      * 1. 优先加载本地缓存；
      * 2. 如果没有本地缓存，则加载asset中预置的routes
+     *
+     * @param asyncLoadRoute 异步加载route, 默认为true
      */
-    private void loadLocalRoutes() {
-        TaskBuilder.create(new Callable<Void>() {
+    private void loadLocalRoutes(boolean asyncLoadRoute) {
+        Callable<Void> callable = new Callable<Void>() {
             @Override
             public Void call() throws Exception {
                 // load cached routes
@@ -127,6 +144,11 @@ public class RouteManager {
                     String routeContent = readCachedRoutes();
                     if (!TextUtils.isEmpty(routeContent)) {
                         mRoutes = GsonHelper.getInstance().fromJson(routeContent, new TypeToken<Routes>() {}.getType());
+                        mRouteSource = "cache: " + mRoutes.deployTime;
+                        File cachedRouteFile = getCachedRoutesFile();
+                        if (null != cachedRouteFile) {
+                            mRouteSource += cachedRouteFile.getAbsolutePath();
+                        }
                     }
                 } catch (Exception e) {
                     LogUtils.i(TAG, e.getMessage());
@@ -138,6 +160,7 @@ public class RouteManager {
                         String routeContent = readPresetRoutes();
                         if (!TextUtils.isEmpty(routeContent)) {
                             mRoutes = GsonHelper.getInstance().fromJson(routeContent, new TypeToken<Routes>() {}.getType());
+                            mRouteSource = "preset" + ":" + mRoutes.deployTime;
                         }
                     } catch (Exception e) {
                         LogUtils.i(TAG, e.getMessage());
@@ -146,8 +169,17 @@ public class RouteManager {
 
                 return null;
             }
-        }, new SimpleTaskCallback<Void>() {
-        }, this).start();
+        };
+        // 支持异步加载和同步加载
+        if (asyncLoadRoute) {
+            TaskBuilder.create(callable, new SimpleTaskCallback<Void>(), this).start();
+        } else {
+            try {
+                callable.call();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     /**
@@ -224,6 +256,7 @@ public class RouteManager {
                     Routes routes = GsonHelper.getInstance().fromJson(mCheckingRouteString, Routes.class);
                     ResourceProxy.getInstance().prepareHtmlFiles(routes);
                 } catch (Exception e) {
+                    // FIXME: 解析失败，不会更新
                     LogUtils.e(TAG, e.getMessage());
                     if (null != callback) {
                         callback.onFail();
@@ -233,6 +266,7 @@ public class RouteManager {
 
             @Override
             public void onFail() {
+                // FIXME: 请求失败，不会更新
                 if (null != callback) {
                     callback.onFail();
                 }
@@ -282,9 +316,12 @@ public class RouteManager {
      */
     public boolean deleteCachedRoutes() {
         File file = getCachedRoutesFile();
+        if (null == file) {
+            return false;
+        }
         boolean result = file.exists() && file.delete();
         if (result) {
-            loadLocalRoutes();
+            loadLocalRoutes(true);
         }
         return result;
     }
@@ -298,6 +335,9 @@ public class RouteManager {
             @Override
             public Void call() throws Exception {
                 File file = getCachedRoutesFile();
+                if (null == file) {
+                    return null;
+                }
                 if (file.exists()) {
                     file.delete();
                 }
@@ -320,7 +360,7 @@ public class RouteManager {
      */
     private String readCachedRoutes() {
         File file = getCachedRoutesFile();
-        if (!file.exists()) {
+        if (null == file || !file.exists()) {
             return null;
         }
         try {
@@ -357,7 +397,10 @@ public class RouteManager {
         if (!fileDir.exists()) {
             fileDir.mkdirs();
         }
-        String cacheFileName = (null != sRouteConfig && !TextUtils.isEmpty(sRouteConfig.routeCacheFileName)) ? sRouteConfig.routeCacheFileName : Constants.DEFAULT_DISK_ROUTES_FILE_NAME;
+        String cacheFileName = (null != sRouteConfig && !TextUtils.isEmpty(sRouteConfig.routeCacheFileName)) ? sRouteConfig.routeCacheFileName : null;
+        if (TextUtils.isEmpty(cacheFileName)) {
+            return null;
+        }
         File file = new File(fileDir, cacheFileName);
         LogUtils.i(TAG, file.getAbsolutePath());
         return file;
@@ -407,6 +450,7 @@ public class RouteManager {
             try {
                 mRoutes = GsonHelper.getInstance().fromJson(mCheckingRouteString, new TypeToken<Routes>() {
                 }.getType());
+                mRouteSource = "refresh" + ":" + mRoutes.deployTime;
             } catch (Exception e) {
                 LogUtils.e(TAG, e.getMessage());
             }
@@ -416,4 +460,5 @@ public class RouteManager {
             LogUtils.i(TAG, "new route effective");
         }
     }
+
 }

@@ -1,10 +1,16 @@
 package com.douban.rexxar.view;
 
+import android.annotation.TargetApi;
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.webkit.MimeTypeMap;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
@@ -13,8 +19,14 @@ import com.douban.rexxar.Constants;
 import com.douban.rexxar.R;
 import com.douban.rexxar.resourceproxy.network.RexxarContainerAPI;
 import com.douban.rexxar.utils.BusProvider;
+import com.douban.rexxar.utils.LogUtils;
+import com.douban.rexxar.utils.MimeUtils;
 import com.douban.rexxar.utils.RxLoadError;
+import com.douban.rexxar.utils.Utils;
+import com.douban.rexxar.utils.io.stream.ClosedInputStream;
 
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.lang.ref.WeakReference;
 import java.util.Map;
 
@@ -44,6 +56,8 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
     private String mUri;
     private boolean mUsePage;
     private WeakReference<RexxarWebViewCore.UriLoadCallback> mUriLoadCallback = new WeakReference<RexxarWebViewCore.UriLoadCallback>(null);
+    // 加载时间
+    private long mStartLoadTime;
 
     public RexxarWebView(Context context) {
         super(context);
@@ -130,6 +144,7 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
         this.mUri = uri;
         this.mUsePage = true;
         mCore.loadUri(uri,this);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void loadUri(String uri, final RexxarWebViewCore.UriLoadCallback callback) {
@@ -140,12 +155,14 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
         }
 
         mCore.loadUri(uri, this);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void loadPartialUri(String uri) {
         mCore.loadPartialUri(uri);
         this.mUri = uri;
         this.mUsePage = false;
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void loadPartialUri(String uri, final RexxarWebViewCore.UriLoadCallback callback) {
@@ -156,6 +173,7 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
         }
 
         mCore.loadPartialUri(uri, this);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     @Override
@@ -212,37 +230,58 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
     }
 
     public void destroy() {
-        mSwipeRefreshLayout.removeView(mCore);
-        mCore.stopLoading();
-        // 退出时调用此方法，移除绑定的服务，否则某些特定系统会报错
-        mCore.getSettings().setJavaScriptEnabled(false);
-        mCore.clearHistory();
-        mCore.clearView();
-        mCore.removeAllViews();
+        // 调用生命周期函数
+        onPageDestroy();
+        setWebViewClient(new NullWebViewClient());
 
+        // 页面加载时间超过4s之后才可以直接销毁
+        if (System.currentTimeMillis() / 1000 - mStartLoadTime > 4) {
+            destroyWebViewCore();
+        } else {
+            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    destroyWebViewCore();
+                }
+            }, 3000);
+        }
+    }
+
+    private void destroyWebViewCore() {
         try {
+            mSwipeRefreshLayout.removeView(mCore);
+            mCore.loadUrl("about:blank");
+            mCore.stopLoading();
+            // 退出时调用此方法，移除绑定的服务，否则某些特定系统会报错
+            mCore.getSettings().setJavaScriptEnabled(false);
+            mCore.clearHistory();
+            mCore.clearView();
+            mCore.removeAllViews();
             mCore.destroy();
         } catch (Throwable ex) {
-
         }
         mCore = null;
     }
 
     public void loadUrl(String url) {
         mCore.loadUrl(url);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void loadData(String data, String mimeType, String encoding) {
         mCore.loadData(data, mimeType, encoding);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void loadUrl(String url, Map<String, String> additionalHttpHeaders) {
         mCore.loadUrl(url, additionalHttpHeaders);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void loadDataWithBaseURL(String baseUrl, String data, String mimeType, String encoding,
                                     String historyUrl) {
         mCore.loadDataWithBaseURL(baseUrl, data, mimeType, encoding, historyUrl);
+        mStartLoadTime = System.currentTimeMillis() / 1000;
     }
 
     public void onPause() {
@@ -292,6 +331,10 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
 
     public void onPageInvisible() {
         callFunction("Rexxar.Lifecycle.onPageInvisible");
+    }
+
+    public void onPageDestroy() {
+        callFunction("Rexxar.Lifecycle.onPageDestroy");
     }
 
     @Override
@@ -357,6 +400,43 @@ public class RexxarWebView extends FrameLayout implements RexxarWebViewCore.UriL
             jsonString = jsonString.replaceAll("(\\\\)([utrn])", "\\\\$1$2");
             jsonString = jsonString.replaceAll("(?<=[^\\\\])(\")", "\\\\\"");
             mCore.loadUrl(String.format(Constants.FUNC_FORMAT_WITH_PARAMETERS, functionName, jsonString));
+        }
+    }
+
+    /**
+     * 存在的原因
+     * 因为我们通过shouldInterceptRequest来实现拦截，经测试发现快速打开rexxar页面再退出，连续5次左右会出现rexxar页无法打开的情况;
+     * 而原生的webview不存在这个问题，经过定位发现如果不覆写shouldInterceptRequest这个方法，就不会出现这个问题。
+     *
+     * 清除WebViewClient是在WebView的destroy方法实现的，所以rexxar的webview必须尽快调用destory方法。
+     *
+     * 但因为退出时要调用js方法，稍微延迟destory，所以通过主动设置一个没有实现shouldInterceptRequest的RexxarWebViewClient来避免能上面的问题。
+     */
+    private static class NullWebViewClient extends RexxarWebViewClient{
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, String url) {
+            return true;
+        }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            return true;
+        }
+
+        @TargetApi(21)
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            String fileExtension = MimeTypeMap.getFileExtensionFromUrl(request.getUrl().toString());
+            String mimeType = MimeUtils.guessMimeTypeFromExtension(fileExtension);
+            return new WebResourceResponse(mimeType, "UTF-8", new ClosedInputStream());
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+            String fileExtension = MimeTypeMap.getFileExtensionFromUrl(url);
+            String mimeType = MimeUtils.guessMimeTypeFromExtension(fileExtension);
+            return new WebResourceResponse(mimeType, "UTF-8", new ClosedInputStream());
         }
     }
 }
