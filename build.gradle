@@ -4,6 +4,7 @@ buildscript {
         maven { url 'http://qaci.intra.douban.com/nexus/content/repositories/douban' }
         mavenCentral()
         jcenter()
+        maven { url 'https://maven.google.com'}
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:2.3.3'
@@ -21,6 +22,7 @@ allprojects {
 
         mavenCentral()
         jcenter()
+        maven { url 'https://maven.google.com'}
     }
 
     tasks.withType(Javadoc) {
@@ -31,9 +33,9 @@ allprojects {
 
 
 ext {
-    compileSdkVersion = 25
-    buildToolsVersion = "25.0.3"
+    compileSdkVersion = 27
+    buildToolsVersion = "27.0.3"
     minSdkVersion = 14
-    targetSdkVersion = 25
-    supportLibraryVersion = "25.3.1"
+    targetSdkVersion = 22
+    supportLibraryVersion = "27.1.1"
 }
